@@ -130,7 +130,7 @@
 
         // is fetch pointer inside bytecode range
         if (!(fetch_ptr in bguard.bytecode))
-            throw bguard.f(bguard.Y), bguard.A;
+            throw bguard.set_error(bguard.ERROR_31), bguard.A;
 
         // if seed undefined, read seed from bytecode
         if (bguard.xtea_seed == _undefined)
@@ -210,7 +210,7 @@
             return bguard.optype_string
         else if (address == bguard.j || address == bguard.p || address == bguard.fetch_ptr || address == bguard.addr_instruction_address || address == bguard.t)
             return bguard.optype_short
-        else if (address == bguard.n)
+        else if (address == bguard.addr_exception)
             return bguard.optype_byte
         else
             return bguard.optype_int
@@ -319,7 +319,7 @@
                 wrmemory(this, this.d, [])
                 wrmemory(this, this.I, "object" == typeof window ? window : self)
                 wrmemory(this, this.J, this)
-                wrmemory(this, this.n, 0)
+                wrmemory(this, this.addr_exception, 0)
                 wrmemory(this, this.p, 0)
                 wrmemory(this, this.G, 0)
                 wrmemory(this, this.g, gen_random_array(4))
@@ -339,7 +339,7 @@
                         }
                         b = a
                     } else b = null;
-                    (this.bytecode = b) && this.bytecode.length ? (this.vmstates = [], this.execute()) : this.f(this.U)
+                    (this.bytecode = b) && this.bytecode.length ? (this.vmstates = [], this.execute()) : this.set_error(this.ERROR_17)
                 }
             } catch (l)
             {
@@ -361,7 +361,7 @@
         f.t = 8,
         f.I = 9,
         f.J = 10,
-        f.n = 11,
+        f.addr_exception = 11,
         f.p = 12,
         f.G = 13,
         f.g = 14,
@@ -380,14 +380,13 @@
         M.prototype.optype_byte   = 1
         M.prototype.optype_short  = 2
         M.prototype.optype_int    = 4
+        M.prototype.ERROR_17 = 17
+        M.prototype.ERROR_21 = 21
+        M.prototype.ERROR_22 = 22
+        M.prototype.ERROR_30 = 30
+        M.prototype.ERROR_31 = 31
+        M.prototype.ERROR_TOO_MUCH_INSTRUCTIONS = 33
 
-
-    f.U = 17,
-    f.W = 21,
-    f.B = 22,
-    f.ea = 30,
-    f.Y = 31,
-    f.X = 33,
     f.A = {},
     f.F = "caller",
     f.K = "toString",
@@ -399,7 +398,7 @@
     {
         value = this.memory[address]
         if (value === _undefined)
-            throw this.f(this.ea, 0, a), this.A;
+            throw this.set_error(this.ERROR_30, 0, address), this.A;
         return value()
     }
 
@@ -428,12 +427,12 @@
         b.push(a[0] << 24 | a[1] << 16 | a[2] << 8 | a[3]), b.push(a[4] << 24 | a[5] << 16 | a[6] << 8 | a[7]), b.push(a[8] << 24 | a[9] << 16 | a[10] << 8 | a[11])
     },
 
-    M.prototype.f = function (error_code, throw_info, param2)
+    M.prototype.set_error = function (error_code, throw_info, additional_info)
     {
         instruction_address = this.rdmemory(this.addr_instruction_address)
         error_info = [error_code, instruction_address >> 8 & 255, instruction_address & 255]
-        if (param2 != _undefined)
-            error_info.push(param2)
+        if (additional_info != _undefined)
+            error_info.push(additional_info)
 
         if (this.rdmemory(this.h).length == 0)
         {
@@ -921,7 +920,7 @@
                         c = new fthis[func](args[0], args[1], args[2], args[3]);
                         break;
                     default:
-                        bguard.f(bguard.B);
+                        bguard.set_error(bguard.ERROR_22);
                         return
                 }
                 wrmemory(bguard, call_params.result, args)
@@ -958,26 +957,57 @@
     {
         try
         {
-            for (b = 5001, c = _undefined, d = 0, a = this.bytecode.length; --b && (d = this.rdmemory(this.fetch_ptr)) < a;) try
+            opcode_func      = _undefined
+            max_instructions = 5000
+            instruction_ptr = 0
+            bytecode_length = this.bytecode.length
+            for (; --max_instructions && (instruction_ptr = this.rdmemory(this.fetch_ptr)) < bytecode_length;)
+            {
+                try
                 {
-                wrmemory(this, this.addr_instruction_address, d), e = fetch(this) % this.M.length, (c = this.opcode_table[e]) ? c(this) : this.f(this.W, 0, e)
-            } catch (l)
+                    wrmemory(this, this.addr_instruction_address, instruction_ptr)
+                    opcode = fetch(this) % this.opcode_table.length
+                    opcode_func = this.opcode_table[opcode]
+                    if (opcode_func)
+                        opcode_func(this)
+                    else
+                        this.set_error(this.ERROR_21, 0, opcode)
+                }
+                catch (exception)
                 {
-                l != this.A && ((h = this.rdmemory(this.n)) ? (wrmemory(this, h, l), wrmemory(this, this.n, 0)) : this.f(this.B, l))
+                    if (exception != this.A)
+                    {
+                        addr_exception = this.rdmemory(this.addr_exception)
+                        if (addr_exception)
+                        {
+                            wrmemory(this, addr_exception, exception)
+                            wrmemory(this, this.addr_exception, 0)
+                        }
+                        else
+                        {
+                            this.set_error(this.ERROR_22, exception)
+                        }
+                    }
+                }
             }
-            b || this.f(this.X)
-        } catch (n)
+            // too much instruction
+            if (max_instructions == 0)
+                this.set_error(this.ERROR_TOO_MUCH_INSTRUCTIONS)
+        }
+        catch (n)
         {
             try
             {
-                this.f(this.B, n)
-            } catch (m)
+                this.set_error(this.ERROR_22, n)
+            }
+            catch (m)
             {
                 set_error_string(this, m)
             }
         }
         return this.rdmemory(this.m)
     },
+
     M.prototype.Q = function (a, b, c, d, e, h, l, n, m, z, r)
     {
         if (this.error_message) return this.error_message;
