@@ -2,6 +2,7 @@
 (function ()
 {
     var _undefined = void 0
+    var self       = this
 
     rdint = function (array, offset)
     {
@@ -106,139 +107,171 @@
         return arguments.length <= 2 ? Array.prototype.slice.call(arrayObject, start) : Array.prototype.slice.call(arrayObject, start, end)
     }
 
-    var f,
-        g = this,
-        k = void 0,
-        p = Array.prototype,
-        s = function (a, b, c, d, e)
-        {
-            c = a.split("."), d = g, c[0] in d || !d.execScript || d.execScript("var " + c[0]);
-            for (; c.length && (e = c.shift()) ;) c.length || b === k ? d = d[e] ? d[e] : d[e] = {} : d[e] = b
-        },
+    wrmemory = function (bguard, address, value)
+    {
+        // if destination address can change pc/fetch pointers
+        if (address == bguard.fetch_ptr || address == bguard.addr_instruction_address)
+            bguard.memory[address] ? bguard.memory[address].set(value) : bguard.memory[address] = create_value(value);
+        else if (address != bguard.d && address != bguard.g && address != bguard.h || !bguard.memory[address])
+            bguard.memory[address] = J(value, bguard.rdmemory);
 
-        u = (new function () { }, function (a, b)
+        // if destination address is teakey, drop seed and skip seed in bytecode
+        if (address == bguard.addr_teakey)
         {
-            a.o = ("E:" + b.message + ":" + b.stack).slice(0, 2048)
-        }),
+            bguard.xtea_seed = _undefined
+            wrmemory(bguard, bguard.fetch_ptr, bguard.rdmemory(bguard.fetch_ptr) + 4)
+        }
+    }
 
-        B = function (a, b, c)
-        {
-            return c = function ()
-            {
-                return a
-            }, b = function ()
-            {
-                return c()
-            }, b.V = function (b)
-            {
-                a = b
-            }, b
-        },
+    /// fetch data from instruction memory
+    fetch = function (bguard)
+    {
+        fetch_ptr = bguard.rdmemory(bguard.fetch_ptr)
 
-        D = function (a, b, c, d)
+        // is fetch pointer inside bytecode range
+        if (!(fetch_ptr in bguard.bytecode))
+            throw bguard.f(bguard.Y), bguard.A;
+
+        // if seed undefined, read seed from bytecode
+        if (bguard.xtea_seed == _undefined)
         {
-            return function ()
-            {
-                if (!d || a.r) 
-                {
-                    wrmemory(a, a.N, arguments)
-                    wrmemory(a, a.m, c)
-                    return C(a, b)
-                }
-            }
-        },
-        
-        C = function (bguard, b)
+            bguard.xtea_seed = rdint(bguard.bytecode, fetch_ptr - 4)
+            bguard.xtea_blockid = _undefined
+        }
+
+        // update decrypted code
+        if (bguard.xtea_blockid != fetch_ptr >> 3)
         {
-            fetch_ptr = bguard.rdmemory(bguard.fetch_ptr)
-            if (bguard.bytecode && fetch_ptr < bguard.bytecode.length )
+            bguard.xtea_blockid = fetch_ptr >> 3
+            key = [0, 0, 0, bguard.rdmemory(bguard.addr_teakey)]
+            bguard.xtea_buff = xteaenc(bguard.xtea_seed, bguard.xtea_blockid, key)
+        }
+
+        wrmemory(bguard, bguard.fetch_ptr, fetch_ptr + 1)
+
+        return bguard.bytecode[fetch_ptr] ^ bguard.xtea_buff[fetch_ptr % 8]
+    }
+
+    create_value = function (value)
+    {
+        var get = function ()
+        {
+            return value
+        }
+
+        var fvalue = function ()
+        {
+            return get()
+        }
+
+        fvalue.set = function (nvalue)
+        {
+            value = nvalue
+        }
+
+        return fvalue
+    }
+
+    set_method = function (method_name, method)
+    {
+        parts = method_name.split(".")
+
+        obj = self
+        if (parts[0] in obj || !obj.execScript)
+            obj.execScript("var " + parts[0]);
+
+        for (; parts.length && (part = parts.shift()) ;)
+        {
+            if (parts.length || method === _undefined)
             {
-                wrmemory(bguard, bguard.fetch_ptr, bguard.bytecode.length)
-                vm_switch(bguard, b)
+                obj = obj[part] ? obj[part] : obj[part] = {}
             }
             else
             {
-                wrmemory(bguard, bguard.fetch_ptr, new_fetchptr)
-                d = bguard.s()
-                wrmemory(bguard, bguard.fetch_ptr, fetch_ptr)
-                d
+                obj[part] = method
             }
         }
+    }
 
-        H = function (bguard)
+    set_error_string = (new function () { }, function (bguard, error)
+    {
+        bguard.error_message = ("E:" + error.message + ":" + error.stack).slice(0, 2048)
+    })
+
+    get_address_type = function (bguard, address)
+    {
+        if (address > bguard.addr_max)
+            return [bguard.optype_byte, bguard.optype_short, bguard.optype_int, bguard.optype_array, bguard.optype_object, bguard.optype_string][address % bguard.optype_max]
+        else if (address == bguard.h || address == bguard.d || address == bguard.g || address == bguard.H)
+            return bguard.optype_array
+        else if (address == bguard.addr_arguments || address == bguard.I || address == bguard.J || address == bguard.m)
+            return bguard.optype_object
+        else if (address == bguard.addr_unicode2ansi)
+            return bguard.optype_string
+        else if (address == bguard.j || address == bguard.p || address == bguard.fetch_ptr || address == bguard.addr_instruction_address || address == bguard.t)
+            return bguard.optype_short
+        else if (address == bguard.n)
+            return bguard.optype_byte
+        else
+            return bguard.optype_int
+    }
+
+    parse_call_params = function (bguard)
+    {
+        op1 = G(proto)
+        op2 = G(proto)
+        op3 = G(proto)
+        op4 = G(proto)
+
+        call_params = {}
+        call_params.operands = operands2string(op1, op2, op3)
+        call_params.func     = proto.vm_read_memory(op1)
+        call_params.result   = op2
+        call_params.self     = proto.vm_read_memory(op4)
+        call_params.args     = []
+        for (narg = 0; narg < op3 - 1; narg++)
         {
-            for (b = {}, b.O = bguard.rdmemory(fetch(bguard)), b.P = fetch(bguard), c = fetch(bguard) - 1, d = fetch(bguard), b.self = bguard.rdmemory(d), b.D = []; c--;) d = fetch(bguard), b.D.push(bguard.rdmemory(d));
-            return b
+            a_argument = fetch(proto)
+            m_argument = proto.vm_read_memory(a_argument)
+            call_params.args.push(m_argument);
         }
+        return call_params
+    }
 
-        wrmemory = function (bguard, address, c)
+    C = function (bguard, newptr)
+    {
+        fetch_ptr = bguard.rdmemory(bguard.fetch_ptr)
+        if (bguard.bytecode && fetch_ptr < bguard.bytecode.length)
         {
-            // if destination address can change pc/fetch pointers
-            if (address == bguard.fetch_ptr || address == bguard.addr_instruction_address)
-                bguard.memory[address] ? bguard.memory[address].V(c) : bguard.memory[address] = B(c);
-            else if (address != bguard.d && address != bguard.g && address != bguard.h || !bguard.memory[address]) 
-                bguard.memory[address] = J(c, bguard.rdmemory);
-
-            // if destination address is teakey, drop seed and skip seed in bytecode
-            if (address == bguard.addr_teakey)
-            {
-                bguard.xtea_seed = _undefined
-                wrmemory(bguard, bguard.fetch_ptr, bguard.rdmemory(bguard.fetch_ptr) + 4)
-            }
+            wrmemory(bguard, bguard.fetch_ptr, bguard.bytecode.length)
+            vm_switch(bguard, newptr)
         }
-
-        /// fetch data from instruction memory
-        fetch = function (bguard)
+        else
         {
-            fetch_ptr = bguard.rdmemory(bguard.fetch_ptr)
-
-            // is fetch pointer inside bytecode range
-            if (!(fetch_ptr in bguard.bytecode))
-                throw bguard.f(bguard.Y), bguard.A;
-
-            // if seed undefined, read seed from bytecode
-            if (bguard.xtea_seed == _undefined)
-            {
-                bguard.xtea_seed    = rdint(bguard.bytecode, fetch_ptr - 4)
-                bguard.xtea_blockid = _undefined
-            }
-
-            // update decrypted code
-            if (bguard.xtea_blockid != fetch_ptr >> 3)
-            {
-                bguard.xtea_blockid = fetch_ptr >> 3
-                key = [0, 0, 0, bguard.rdmemory(bguard.addr_teakey)]
-                bguard.xtea_buff = xteaenc(bguard.xtea_seed, bguard.xtea_blockid, key)
-            }
-
-            wrmemory(bguard, bguard.fetch_ptr, fetch_ptr + 1)
-
-            return bguard.bytecode[fetch_ptr] ^ bguard.xtea_buff[fetch_ptr % 8]
+            wrmemory(bguard, bguard.fetch_ptr, newptr)
+            bguard.execute()
+            wrmemory(bguard, bguard.fetch_ptr, fetch_ptr)
         }
+    }
 
+    create_callback = function (bguard, newptr, c, d)
+    {
+        return function ()
+        {
+            if (!d || bguard.canrun)
+            {
+                wrmemory(bguard, bguard.addr_arguments, arguments)
+                wrmemory(bguard, bguard.m, c)
+                return C(bguard, newptr)
+            }
+        }
+    }
+        
 
         K = function (a, b, c, d, e)
         {
             for (a = a.replace(/\\r\\n/g, "\\n"), b = [], d = c = 0; d < a.length; d++) e = a.charCodeAt(d), 128 > e ? b[c++] = e : (2048 > e ? b[c++] = e >> 6 | 192 : (b[c++] = e >> 12 | 224, b[c++] = e >> 6 & 63 | 128), b[c++] = e & 63 | 128);
             return b
-        }
-
-        get_address_type = function (bguard, address)
-        {
-            if (address > bguard.addr_max)
-                return [bguard.optype_byte, bguard.optype_short, bguard.optype_int, bguard.optype_array, bguard.optype_object, bguard.optype_string][address % bguard.optype_max]
-            else if (address == bguard.h || address == bguard.d || address == bguard.g || address == bguard.H)
-                return bguard.optype_array
-            else if (address == bguard.N || address == bguard.I || address == bguard.J || address == bguard.m)
-                return bguard.optype_object
-            else if (address == bguard.addr_unicode2ansi)
-                return bguard.optype_string 
-            else if (address == bguard.j || address == bguard.p || address == bguard.fetch_ptr || address == bguard.addr_instruction_address || address == bguard.t)
-                return bguard.optype_short
-            else if (address == bguard.n)
-                return bguard.optype_byte
-            else
-                return bguard.optype_int
         }
 
         J = function (a, b, c, d, e, h, l, n, m)
@@ -250,7 +283,7 @@
             {
                 for (v = 0, a = d[e.F], r = a === b, a = a && a[e.F]; a && a != h && a != l && a != n && a != m && 20 > v;) v++, a = a[e.F];
                 return c[e.ga + r + !(!a + (v >> 2))]
-            }, d[e.K] = e, c[e.fa] = a, a = k, d
+            }, d[e.K] = e, c[e.fa] = a, a = _undefined, d
         }
 
         N = function (bguard, b, c, d)
@@ -284,7 +317,7 @@
                 wrmemory(this, this.addr_teakey, 0)
                 wrmemory(this, this.h, [])
                 wrmemory(this, this.d, [])
-                wrmemory(this, this.I, "object" == typeof window ? window : g)
+                wrmemory(this, this.I, "object" == typeof window ? window : self)
                 wrmemory(this, this.J, this)
                 wrmemory(this, this.n, 0)
                 wrmemory(this, this.p, 0)
@@ -293,8 +326,8 @@
                 wrmemory(this, this.H, [])
                 wrmemory(this, this.m, {})
                 wrmemory(this, this.j, 2048)
-                this.r = true
-                if (a && "!" == a.charAt(0)) this.o = a;
+                this.canrun = true
+                if (a && "!" == a.charAt(0)) this.error_message = a;
                 else
                 {
                     if (window.atob)
@@ -306,15 +339,15 @@
                         }
                         b = a
                     } else b = null;
-                    (this.bytecode = b) && this.bytecode.length ? (this.vmstates = [], this.s()) : this.f(this.U)
+                    (this.bytecode = b) && this.bytecode.length ? (this.vmstates = [], this.execute()) : this.f(this.U)
                 }
             } catch (l)
             {
-                u(this, l)
+                set_error_string(this, l)
             }
         };
 
-        f = M.prototype
+        var f = M.prototype
 
         M.prototype.fetch_ptr   = 0
         M.prototype.addr_teakey = 1
@@ -323,7 +356,7 @@
         f.addr_instruction_address = 3,
         f.d = 4,
         f.addr_unicode2ansi = 5,
-        f.N = 6,
+        f.addr_arguments    = 6,
         f.j = 7,
         f.t = 8,
         f.I = 9,
@@ -394,19 +427,45 @@
     {
         b.push(a[0] << 24 | a[1] << 16 | a[2] << 8 | a[3]), b.push(a[4] << 24 | a[5] << 16 | a[6] << 8 | a[7]), b.push(a[8] << 24 | a[9] << 16 | a[10] << 8 | a[11])
     },
-    M.prototype.f = function (a, b, c)
+
+    M.prototype.f = function (error_code, throw_info, param2)
     {
-        d = this.rdmemory(this.addr_instruction_address)
-        a = [a, d >> 8 & 255, d & 255]
-        c != k && a.push(c)
-        0 == this.rdmemory(this.h).length && (this.memory[this.h] = k, wrmemory(this, this.h, a))
-        c = ""
-        b && (b.message && (c += b.message), b.stack && (c += ":" + b.stack))
+        instruction_address = this.rdmemory(this.addr_instruction_address)
+        error_info = [error_code, instruction_address >> 8 & 255, instruction_address & 255]
+        if (param2 != _undefined)
+            error_info.push(param2)
+
+        if (this.rdmemory(this.h).length == 0)
+        {
+            this.memory[this.h] = _undefined
+            wrmemory(this,this.h,error_info)
+        }
+
+        message = ""
+        if (throw_info)
+        {
+            if (throw_info.message)
+                message += throw_info.message;
+            if (throw_info.stack)
+            {
+                message += ":"
+                message += throw_info.message;
+            }
+        }
         b = this.rdmemory(this.j)
-        3 < b && (c = c.slice(0, b - 3), b -= c.length + 3, c = K(c), N(this, this.g, int2array(c.length, 2).concat(c), this.ba))
+        c = message
+
+        if (b > 3)
+        {
+            c = c.slice(0, b - 3),
+            b -= c.length + 3,
+            c = K(c),
+            N(this, this.g, int2array(c.length, 2).concat(c), this.ba)
+        }
+        
         wrmemory(this, this.j, b)
     },
-    f.M =
+    M.prototype.opcode_table =
         [
             /// opcode 0x00
             /// nop
@@ -616,12 +675,12 @@
             },
             /// ***********************************************
             /// opcode 0x09
-            /// ???
+            /// call op1,op2,op3,..... (func,result,numargs,...)
             /// ***********************************************
             function (bguard)
             {
-                b = H(bguard)
-                wrmemory(bguard, b.P, b.O.apply(b.self, b.D))
+                call_params = parse_call_params(bguard)
+                wrmemory(bguard, call_params.result, call_params.func.apply(call_params.self, call_params.args))
             },
             /// ***********************************************
             /// opcode 0x0A
@@ -637,7 +696,7 @@
             /// ***********************************************
             /// opcode 0x0B
             /// addevent op1,op2,op3,op4
-            /// op1.addEventListener(op2,xxx,false)
+            /// op1.addEventListener(op2,(newptr,arg0),false)
             /// ***********************************************
             function (bguard)
             {
@@ -649,9 +708,9 @@
                 obj = bguard.rdmemory(op1)
                 ev  = bguard.rdmemory(op2)
 
-                d = bguard.rdmemory(fetch(bguard))
-                e = bguard.rdmemory(fetch(bguard))
-                obj.addEventListener(ev, D(bguard, d, e, true), false)
+                newptr = bguard.rdmemory(op3)
+                arg0   = bguard.rdmemory(op4)
+                obj.addEventListener(ev, create_callback(bguard, newptr, arg0, true), false)
             },
             /// ***********************************************
             /// opcode 0x0C
@@ -812,9 +871,17 @@
             /// ***********************************************
             function (bguard)
             {
-                b = fetch(bguard), c = bguard.rdmemory(fetch(bguard)), d = bguard.rdmemory(fetch(bguard)), wrmemory(bguard, b, D(bguard, c, d))
+                op1 = fetch(bguard)
+                op2 = fetch(bguard)
+                op3 = fetch(bguard)
+
+                newptr = bguard.rdmemory(op2)
+                arg2   = bguard.rdmemory(op3)
+                wrmemory(bguard, op1, create_callback(bguard, newptr, arg2))
             },
+            /// ***********************************************
             /// opcode 0x18
+            /// ***********************************************
             function (bguard)
             {
                 b = fetch(bguard), c = fetch(bguard), wrmemory(bguard, c, bguard.rdmemory(c) * bguard.rdmemory(b))
@@ -832,29 +899,32 @@
             /// opcode 0x1B
             function (bguard)
             {
-                b = H(bguard), c = b.D, d = b.self, e = b.O;
-                switch (c.length)
+                call_params = parse_call_params(bguard),
+                args  = call_params.args
+                fthis = call_params.self
+                func  = call_params.func
+                switch (args.length)
                 {
                     case 0:
-                        c = new d[e];
+                        c = new fthis[func];
                         break;
                     case 1:
-                        c = new d[e](c[0]);
+                        c = new fthis[func](args[0]);
                         break;
                     case 2:
-                        c = new d[e](c[0], c[1]);
+                        c = new fthis[func](args[0], args[1]);
                         break;
                     case 3:
-                        c = new d[e](c[0], c[1], c[2]);
+                        c = new fthis[func](args[0], args[1], args[2]);
                         break;
                     case 4:
-                        c = new d[e](c[0], c[1], c[2], c[3]);
+                        c = new fthis[func](args[0], args[1], args[2], args[3]);
                         break;
                     default:
                         bguard.f(bguard.B);
                         return
                 }
-                wrmemory(bguard, b.P, c)
+                wrmemory(bguard, call_params.result, args)
             },
             /// opcode 0x1C
             function (bguard)
@@ -882,14 +952,15 @@
     M.prototype.ha = function (a, b)
     {
         return b = this.Q(), a && a(b), b
-    },
-    M.prototype.s = function (a, b, c, d, e, h)
+    }
+
+    M.prototype.execute = function ()
     {
         try
         {
-            for (b = 5001, c = k, d = 0, a = this.bytecode.length; --b && (d = this.rdmemory(this.fetch_ptr)) < a;) try
+            for (b = 5001, c = _undefined, d = 0, a = this.bytecode.length; --b && (d = this.rdmemory(this.fetch_ptr)) < a;) try
                 {
-                wrmemory(this, this.addr_instruction_address, d), e = fetch(this) % this.M.length, (c = this.M[e]) ? c(this) : this.f(this.W, 0, e)
+                wrmemory(this, this.addr_instruction_address, d), e = fetch(this) % this.M.length, (c = this.opcode_table[e]) ? c(this) : this.f(this.W, 0, e)
             } catch (l)
                 {
                 l != this.A && ((h = this.rdmemory(this.n)) ? (wrmemory(this, h, l), wrmemory(this, this.n, 0)) : this.f(this.B, l))
@@ -902,23 +973,39 @@
                 this.f(this.B, n)
             } catch (m)
             {
-                u(this, m)
+                set_error_string(this, m)
             }
         }
         return this.rdmemory(this.m)
     },
     M.prototype.Q = function (a, b, c, d, e, h, l, n, m, z, r)
     {
-        if (this.o) return this.o;
+        if (this.error_message) return this.error_message;
         try
         {
-            if (this.r = false, b = this.rdmemory(this.d).length, c = this.rdmemory(this.g).length, d = this.rdmemory(this.j), this.memory[this.t] && C(this, this.rdmemory(this.t)), e = this.rdmemory(this.h), 0 < e.length && N(this, this.d, int2array(e.length, 2).concat(e), this.R), h = this.rdmemory(this.p) & 255, h -= this.rdmemory(this.d).length + 4, l = this.rdmemory(this.g), 4 < l.length && (h -= l.length + 3), 0 < h && N(this, this.d, int2array(h, 2).concat(gen_random_array(h)), this.S), 4 < l.length && N(this, this.d, int2array(l.length, 2).concat(l), this.T), n = [3].concat(this.rdmemory(this.d)), window.btoa ? (z = window.btoa(array_buffer_tostring(n)), m = z = z.replace(/\\+/g, "-").replace(/\\/ / g, "_").replace(/=/g, "")) : m = k, m) m = "!" + m;
+            this.canrun = false
+            b = this.rdmemory(this.d).length
+            c = this.rdmemory(this.g).length
+            d = this.rdmemory(this.j)
+            this.memory[this.t]
+            C(this, this.rdmemory(this.t))
+            e = this.rdmemory(this.h)
+            0 < e.length && N(this, this.d, int2array(e.length, 2).concat(e), this.R)
+            h = this.rdmemory(this.p) & 255
+            h -= this.rdmemory(this.d).length + 4
+            l = this.rdmemory(this.g)
+            4 < l.length && (h -= l.length + 3)
+            0 < h && N(this, this.d, int2array(h, 2).concat(gen_random_array(h)), this.S)
+            4 < l.length && N(this, this.d, int2array(l.length, 2).concat(l), this.T)
+            n = [3].concat(this.rdmemory(this.d))
+            if (window.btoa ? (z = window.btoa(array_buffer_tostring(n)), m = z = z.replace(/\\+/g, "-").replace(/\\/ / g, "_").replace(/=/g, "")) : m = _undefined, m) m = "!" + m;
             else
                 for (m = "", e = 0; e < n.length; e++) r = n[e][this.K](16), 1 == r.length && (r = "0" + r), m += r;
-            this.rdmemory(this.d).length = b, this.rdmemory(this.g).length = c, wrmemory(this, this.j, d), a = m, this.r = true
+            this.rdmemory(this.d).length = b, this.rdmemory(this.g).length = c, wrmemory(this, this.j, d), a = m, this.canrun = true
         } catch (v)
         {
-            u(this, v), a = this.o
+            set_error_string(this, v),
+            a = this.error_message
         }
         return a
     };
@@ -937,6 +1024,8 @@
     E = int2array
     w = gen_random_array
     q = sub_array
+    g = self
+    s = set_method
 
 
     /// M prototypes
@@ -949,6 +1038,9 @@
     M.prototype.k  = M.prototype.addr_instruction_address
     M.prototype.l  = M.prototype.optype_array
     M.prototype.L  = M.prototype.vmstates
+    M.prototype.M  = M.prototype.opcode_table
+    M.prototype.o  = M.prototype.error_message
+    M.prototype.s  = M.prototype.execute
     M.prototype.u  = M.prototype.optype_object
     M.prototype.v  = M.prototype.addr_unicode2ansi
     M.prototype.w  = M.prototype.xtea_seed
@@ -956,8 +1048,9 @@
     M.prototype.Z  = M.prototype.xtea_buff
     M.prototype.aa = M.prototype.optype_max
 
-    s("botguard.bg", M),
-    s("botguard.bg.prototype.invoke", M.prototype.ha);
+
+    set_method("botguard.bg", M),
+    set_method("botguard.bg.prototype.invoke", M.prototype.ha);
 
     bg = new M(encdata);
     bg.invoke(0, 0);
